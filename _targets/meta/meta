@@ -1,0 +1,9 @@
+name|type|data|command|depend|seed|path|time|size|bytes|format|repository|iteration|parent|children|seconds|warnings|error
+.Random.seed|object|8cac97e94f96aaba|||||||||||||||
+ontario_road_full_shp|stem|fd9ace2687b6c8af|1233036829c49c45|2f46cd124fe01aa2|1401974855||t19443.770447687s|e4b69e5bf49aabf3|2863463|rds|local|vector|||578.374||
+ottawa_buffer_shp|stem|f2a72af8199fd658|3b86a9587d605276|001bfd95d9a7ee5c|2059453123||t19443.5626527208s|ec820e3ced19dadd|40957|rds|local|vector|||2.967||
+ottawa_db_shp|stem|e55cc6f422e66ae7|3d1ef935a2995d34|c3b5fc02cdc369c1|-649173296||t19443.5626177671s|c4c54d994b136fd5|2178468|rds|local|vector|||0.522||
+ottawa_road_filtered_shp|stem|4e940d4198522f42|966618635b935fec|02b703f1b9ec07bc|1341059096||t19443.7728735049s|dcb39f2b757e4470|2698571|rds|local|vector|||0.157||
+ottawa_road_fitered_shp|stem|4e940d4198522f42|966618635b935fec|02b703f1b9ec07bc|-1581283443||t19443.7725889983s|dcb39f2b757e4470|2698571|rds|local|vector|||0.179||
+ottawa_road_shp|stem|da7a3dad7a31c553|5cd3fac8a563f764|ef46db3751d8e999|1616130942||t19443.5873011479s|ac45463db19e2cbe|48|rds|local|vector|||0||
+statscan_roadnetwork_filepath|stem|ddf065ee5b907d0e|fb79e9b76ef8d690|ef46db3751d8e999|1512799421||t19443.5873013794s|758d7d51407f572d|117|rds|local|vector|||0.001||
