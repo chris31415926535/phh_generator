@@ -130,7 +130,7 @@ test_dbs |>
 
 # test random DBs
 # 35061498005  gives points outside of db
-db_rnd <- dplyr::filter(test_dbs, DBUID=="35061498005")
+db_rnd <- dplyr::filter(test_dbs, DBUID=="35061498005") #35060001002
 db_rnd <- dplyr::slice_sample(test_dbs, n=1)
 phh_rnd <- dplyr::filter(phhs, DBUID == db_rnd$DBUID)
 
@@ -200,12 +200,17 @@ p <- progressr::progressor(length(dbs_for_study))
 test_furr_all <- furrr::future_map(dbs_for_study, ~{
  p()
   get_phhs_parallel(db = .x, db_pops = neighbourhoodstudy::ottawa_dbs_pop2021,
-                    roads = ottawa_road_filtered_shp)
+                    roads = ottawa_road_filtered_shp, min_phh_pop = 5, road_buffer_m = 5)
 } , .options=furrr::furrr_options(seed=NULL)
 #,.progress = TRUE
 )
 })
 tictoc::toc()
+
+phhs <- dplyr::tibble(x=test_furr_all) |> tidyr::unnest(x) |>
+  sf::st_as_sf()
+
+sf::write_sf(test_)
 
 ############### NOT PARALLEL
 # 500 dbs: 276s if not parallel!!!!
@@ -220,11 +225,13 @@ progressr::with_progress({
   test_purr_all <- purrr::map(dbs_for_study, ~{
     p()
     get_phhs_parallel(db = .x, db_pops = neighbourhoodstudy::ottawa_dbs_pop2021,
-                      roads = ottawa_road_filtered_shp)
+                      roads = ottawa_road_filtered_shp, min_phh_pop = 5, road_buffer_m = 5)
   })
 })
 tictoc::toc()
 
+
+## EXPLORE RESULTS
 
 phhs <- dplyr::tibble(x=test_furr_all) |> tidyr::unnest(x) |>
   sf::st_as_sf()
