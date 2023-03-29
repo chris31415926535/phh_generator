@@ -18,7 +18,7 @@ testfunction <- function(db){
 
   # ggplot() + geom_sf(data=db) + geom_sf(data=roads)
 
-  # if it doesn't intersect any roads
+  # if it doesn't intersect any roads, we set a single PHH in the DB centroid
   # can test with DBUID 35061853010
   if (nrow(roads) == 0) {
     result <- sf::st_centroid(db)
@@ -28,9 +28,8 @@ testfunction <- function(db){
     return(dplyr::tibble())
   }
 
-  ## TODO FIXME: figure out how many phhs to do. should user either density or number
-  # maybe depending on size?
-  # make points but they're on the streets, cast to points
+  ## set candidate PHHs by sampling road segments at the density set by the user
+  # cast to points
   phh_onstreet <- sf::st_line_sample(roads, density = phh_density) |>
     sf::st_cast("POINT")
 
@@ -65,7 +64,7 @@ testfunction <- function(db){
 
 
 
-get_phhs_parallel <- function(db, db_pops, roads, min_phh_pop = 5, road_buffer_m = 5 ){
+get_phhs_parallel <- function(db, db_pops, roads, min_phh_pop = 5, min_phhs_per_db = 1, road_buffer_m = 5 ){
   #db_pops <- neighbourhoodstudy::ottawa_dbs_pop2021
   message(db$DBUID)
   #phh_householdsize <- 15
@@ -80,7 +79,9 @@ get_phhs_parallel <- function(db, db_pops, roads, min_phh_pop = 5, road_buffer_m
   #num_points <- round(db_pop/householdsize)
 
   # get the roads that intersect the db plus a buffer?
-  roads_touching_db <- sf::st_filter(roads, sf::st_buffer(db, road_buffer_m))
+  #roads_touching_db <- sf::st_filter(roads, sf::st_buffer(db, road_buffer_m))
+  # we cast to multilinestring and then back to linestring to deal with disconnected multilinestrings
+  roads_touching_db <- sf::st_intersection(roads, sf::st_buffer(db, road_buffer_m)) |> sf::st_cast("MULTILINESTRING") |> sf::st_cast("LINESTRING")
 
 
   # ggplot() + geom_sf(data=db) + geom_sf(data=roads_touching_db)
@@ -95,12 +96,40 @@ get_phhs_parallel <- function(db, db_pops, roads, min_phh_pop = 5, road_buffer_m
     return(dplyr::tibble())
   }
 
-  ## TODO FIXME: figure out how many phhs to do. should user either density or number
-  # maybe depending on size?
-  # make points but they're on the streets, cast to points
+  ## set candidate PHHs by sampling road segments at the density set by the user
+  # cast to points
 
   phh_onstreet <- sf::st_line_sample(roads_touching_db, density = phh_density) |>
     sf::st_cast("POINT")
+
+  # If line sampling returns no points, sample 1 per db-intersecting line segment
+  # sometimes road segments are too short for density, so then we sample 1 point
+  # from the intersection of the db and each road segment
+  if (length(phh_onstreet) == 0) {
+    phh_onstreet <- sf::st_line_sample(
+      roads_touching_db
+      # sf::st_intersection(roads_touching_db, sf::st_buffer(db, road_buffer_m)),
+      ,n=1
+      ) |>
+      sf::st_cast("POINT")
+  }
+
+  # if we don't get enough candidate points because of density being too low, take the longest road segments
+  # and sample from them manually
+  if (length(phh_onstreet) < min_phhs_per_db) {
+    roads_touching_db$lengths <- sf::st_length(roads_touching_db)
+    roads_for_sample <- roads_touching_db |> dplyr::arrange(dplyr::desc(lengths)) |> dplyr::slice_head(n=min_phhs_per_db)
+    num_to_sample <- ceiling(min_phhs_per_db/nrow(roads_for_sample))
+
+    phh_onstreet <- sf::st_line_sample(
+      roads_for_sample
+      # sf::st_intersection(roads_touching_db, sf::st_buffer(db, road_buffer_m)),
+      ,n=num_to_sample
+    ) |>
+      sf::st_cast("POINT")
+  }
+
+  # ggplot() + geom_sf(data=db) + geom_sf(data=phh_onstreet)
 
   # get phh points slightly off the street based on the on-street points
   # this one is okay but doesn't work on weird-shaped dbs like 35060126020  with holes in them
@@ -108,16 +137,16 @@ get_phhs_parallel <- function(db, db_pops, roads, min_phh_pop = 5, road_buffer_m
 
   # only if we find none, use the more complicated method
   #phh_indb <- get_phh_points_pushpull (db, phh_onstreet, delta_distance = 5) # this one is a bit slower but maybe works better? for now
-  #if (nrow(phh_indb) == 0) phh_indb <- get_phh_points_pushpull (db, phh_onstreet, delta_distance = 5) # this one is a bit slower but maybe works better? for now
+  if (nrow(phh_indb) == 0) phh_indb <- get_phh_points_pushpull (db, phh_onstreet, delta_distance = 5) # this one is a bit slower but maybe works better? for now
 
 
   #ggplot() + geom_sf(data=db) + geom_sf(data=roads_touching_db) + geom_sf(data=phh_indb)
 
   ## make sure we get the right number of points here
-  # THIS ALGORITHM ISN'T QUITE RIGHT, IT OFTEN GIVES ONE TOO MANY
+  # TODOD FIXME create a tested function instead of this
   if (db_pop/nrow(phh_indb) < min_phh_pop) {
     num_needed <- ceiling(db_pop/min_phh_pop)
-    #message("sdaf")
+
     num_orig <- nrow(phh_indb)
     num_per_rep <- ceiling(num_orig/num_needed)
     num_reps <- ceiling(num_orig/num_per_rep)

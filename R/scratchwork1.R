@@ -246,3 +246,39 @@ phhs <- dplyr::tibble(x=test_furrr) |> tidyr::unnest(x) |>
   sf::st_as_sf()
 
 sf::write_sf(phhs, sprintf("output/phhs-%s.shp", Sys.Date()))
+
+
+
+### any missing dbs???
+library(tidyverse)
+library(leaflet)
+targets::tar_load_everything()
+
+roads <- ottawa_road_filtered_shp; min_phh_pop = 5; road_buffer_m = 5
+
+dbs_missing <- dplyr::filter(ottawa_db_shp , ! DBUID %in% unique(phhs$DBUID)) |>
+  dplyr::left_join(dplyr::mutate(db_pops, DBUID=as.character(DBUID)), dplyr::join_by("DBUID")) |>
+  dplyr::select(DBUID, dbpop2021) |>
+  dplyr::arrange(dplyr::desc(dbpop2021))
+
+dbs_missing
+sum(dbs_missing$dbpop2021)
+
+ottawa_db_shp |> dplyr::filter(DBUID == dbs_missing$DBUID[[1]]) |> ggplot2::ggplot() + ggplot2::geom_sf()
+
+db <- dbs_for_study[dbs_missing$DBUID[[1]]][[1]]
+
+db <- dbs_for_study["35060002004"][[1]]
+db <- dbs_for_study["35061703002"][[1]]
+
+### anny really big dbs????
+
+big_phhs <- phhs |> arrange(desc(pop)) |> slice_head(n=10) |> sf::st_transform(crs="WGS84")
+big_dbs <- ottawa_db_shp |> dplyr::filter(DBUID %in% big_phhs$DBUID) |> sf::st_transform(crs="WGS84")
+
+leaflet() |> addTiles() |> addPolygons(data = big_dbs, label = ~ DBUID, popup = ~ DBUID) |> addMarkers(data=big_phhs, label = ~ pop)
+
+
+### how many phhs per db?
+
+phhs |> sf::st_set_geometry(NULL) |> dplyr::group_by(DBUID) |> summarise(n=n()) |> pull(n) |> hist(breaks = 111) #summarise(median=median(n), mean=mean(n))
