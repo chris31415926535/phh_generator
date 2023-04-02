@@ -1,4 +1,150 @@
 
+get_phhs_polished <- function(region, region_idcol, region_pops, roads, min_phh_pop = 5, min_phhs_per_region = 1, min_phh_distance = 25, road_buffer_m = 5 ){
+  #region_pops <- neighbourhoodstudy::ottawa_regions_pop2021
+  region_idcol <- "DBUID"
+  #message(region[,region_idcol, drop=TRUE])
+  #phh_householdsize <- 15
+  phh_density  <- 0.005
+
+
+  #region <- test_regions[i,]
+  #region_pop <- region_pops$dbpop2021[region_pops$DBUID == region$DBUID]
+  region_pop <- region_pops$dbpop2021[region_pops[, region_idcol, drop=TRUE] == region[, region_idcol, drop=TRUE]]
+
+
+  # if no population, return empty result
+  if (region_pop == 0) return(dplyr::tibble());
+
+  #num_points <- round(db_pop/householdsize)
+
+  # get the roads that intersect the db plus a buffer?
+  #roads_touching_db <- sf::st_filter(roads, sf::st_buffer(db, road_buffer_m))
+  # we cast to multilinestring and then back to linestring to deal with disconnected multilinestrings
+  roads_touching_region <- sf::st_intersection(roads, sf::st_buffer(region, road_buffer_m)) |> sf::st_cast("MULTILINESTRING") |> sf::st_cast("LINESTRING")
+
+
+  # ggplot() + geom_sf(data=region) + geom_sf(data=roads_touching_region)
+
+  # if it doesn't intersect any roads
+  # FIXME TODO this can be an option!
+  # can test with DBUID 35061853010
+  if (nrow(roads_touching_region) == 0) {
+    #result <- sf::st_centroid(region)
+    #result$DBUID <- region$DBUID
+    #result[, region_idcol] <- region$DBUID
+    #result$pop <- region_pop
+    #result$offroad <- TRUE
+    return(dplyr::tibble())
+  }
+
+  ## set candidate PHHs by sampling road segments at the density set by the user
+  # cast to points
+
+  phh_onstreet <- sf::st_line_sample(roads_touching_region, density = phh_density) |>
+    sf::st_cast("POINT")
+
+  # If line sampling returns no points, sample 1 per region-intersecting line segment
+  # sometimes road segments are too short for density, so then we sample 1 point
+  # from the intersection of the region and each road segment
+  if (length(phh_onstreet) == 0) {
+    phh_onstreet <- sf::st_line_sample(
+      roads_touching_region
+      # sf::st_intersection(roads_touching_region, sf::st_buffer(region, road_buffer_m)),
+      ,n=1
+    ) |>
+      sf::st_cast("POINT")
+  }
+
+  # if we don't get enough candidate points because of density being too low, take the longest road segments
+  # and sample from them manually
+  if (length(phh_onstreet) < min_phhs_per_region) {
+    roads_touching_region$lengths <- sf::st_length(roads_touching_region)
+    roads_for_sample <- roads_touching_region |> dplyr::arrange(dplyr::desc(lengths)) |> dplyr::slice_head(n=min_phhs_per_region)
+    num_to_sample <- ceiling(min_phhs_per_region/nrow(roads_for_sample))
+
+    phh_onstreet <- sf::st_line_sample(
+      roads_for_sample
+      # sf::st_intersection(roads_touching_region, sf::st_buffer(region, road_buffer_m)),
+      ,n=num_to_sample
+    ) |>
+      sf::st_cast("POINT")
+  }
+
+  # ggplot() + geom_sf(data=region) + geom_sf(data=phh_onstreet)
+
+  # get phh points slightly off the street based on the on-street points
+  # this one is okay but doesn't work on weird-shaped regions like 35060126020  with holes in them
+  #phh_inregion <-  get_phh_points_easy (region, phh_onstreet, delta_distance = 5)
+
+  # only if we find none, use the more complicated method
+  #phh_inregion <- get_phh_points_pushpull (region, phh_onstreet, delta_distance = 5) # this one is a bit slower but maybe works better? for now
+  #if (nrow(phh_inregion) == 0)
+  phh_inregion <- get_phh_points_pushpull (region, phh_onstreet, delta_distance = 5) # this one is a bit slower but maybe works better? for now
+
+
+  #ggplot() + geom_sf(data=region) + geom_sf(data=roads_touching_region) + geom_sf(data=phh_inregion)
+
+  ## make sure we get the right number of points here
+  # TODOD FIXME create a tested function instead of this
+  if (region_pop/nrow(phh_inregion) < min_phh_pop) {
+    num_needed <- ceiling(region_pop/min_phh_pop)
+
+    num_orig <- nrow(phh_inregion)
+    num_per_rep <- ceiling(num_orig/num_needed)
+    num_reps <- ceiling(num_orig/num_per_rep)
+    # looks complex but this is to whittle our list down
+    # say we have 6 but need 4.
+    filter_index <- rep(c(TRUE, rep(FALSE, times= num_per_rep)), times=(num_reps+1))[1:num_orig]
+    phh_inregion_filtered <- phh_inregion[filter_index,]
+  } else {
+    phh_inregion_filtered <- phh_inregion
+  }
+
+  ## make sure PHHs aren't too close together
+  # create a buffer around them of radius 0.5 the min separation distance
+  phh_testbuffer <- sf::st_buffer(phh_inregion_filtered, dist = min_phh_distance/2)
+
+  # ggplot() + geom_sf(data=region) + geom_sf(data=phh_testbuffer)
+
+  phh_intersections <- sf::st_intersects(phh_testbuffer) |>
+    lapply(unlist)
+
+  num_intersections <- unlist(lapply(phh_intersections, length))
+  phhs_to_investigate <- which(num_intersections>1)
+
+  phh_keepers_index <- rep(TRUE, times=length(num_intersections))
+
+  #for (i in 1:length(num_intersections)){
+  if (length(phhs_to_investigate) > 1){
+    for (i in phhs_to_investigate){
+      #  message(i)
+      #if (num_intersections[[i]] == 1 || !phh_keepers[[i]])   next
+      if (!phh_keepers_index[[i]])   next
+      # message("more than one")
+      #message("keep the first good one we found")
+      phh_keepers_index[setdiff(phh_intersections[[i]], i)] <- FALSE
+
+    } # end for
+  } # end if
+
+  phh_keepers <- phh_inregion_filtered[phh_keepers_index,]
+
+  #ggplot() + geom_sf(data=region) + geom_sf(data=roads_touching_region) + geom_sf(data=phh_keepers)
+
+  result <- dplyr::as_tibble(phh_keepers)
+
+  # set the DBUID
+  #result$DBUID <- region$DBUID
+  result[, region_idcol] <- region[, region_idcol, drop = TRUE]
+
+  result$pop <- region_pop/nrow(result)
+  #phh_nearpoint|> ggplot() + geom_sf(data=phh_buffer) +geom_sf(aes(colour="red"))
+
+  return(result)
+  #results[[i]] <- result
+}
+
+
 
 
 get_phhs_parallel <- function(db, db_pops, roads, min_phh_pop = 5, min_phhs_per_db = 1, min_phh_distance = 25, road_buffer_m = 5 ){
