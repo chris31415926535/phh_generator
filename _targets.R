@@ -11,6 +11,7 @@ source("R/testfunction1.R")
 
 
 ##22.9 minutes on march 28
+## 4.6 minutes for the PHHs on the battlecruiser, march 31 :D
 
 list(
   # set up road network
@@ -66,6 +67,9 @@ list(
 
     phhs
   }),
+
+  tar_target(save_phhs,
+             sf::write_sf(phhs, sprintf("output/phhs-%s.shp", Sys.Date()))),
   #
   # tar_target(testmap, {
   #   ggplot(sf::st_transform(phhs,crs="WGS84")) + geom_sf() + geom_sf(data=sf::st_transform(ottawa_road_filtered_shp, crs="WGS84"))

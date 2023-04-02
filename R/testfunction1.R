@@ -1,70 +1,7 @@
 
 
-testfunction <- function(db){
-  message(db$DBUID)
-  phh_householdsize <- 15
-  phh_density  <- 0.005
 
-  #db <- test_dbs[i,]
-  db_pop <- neighbourhoodstudy::ottawa_dbs_pop2021$dbpop2021[neighbourhoodstudy::ottawa_dbs_pop2021$DBUID == db$DBUID]
-
-  if (db_pop == 0 | length(db_pop) == 0) return(dplyr::tibble());
-
-  num_points <- round(db_pop/householdsize)
-
-  # get the roads that intersect the db plus a buffer?
-  roads <- sf::st_filter(test_roads, sf::st_buffer(db, 5))
-
-
-  # ggplot() + geom_sf(data=db) + geom_sf(data=roads)
-
-  # if it doesn't intersect any roads, we set a single PHH in the DB centroid
-  # can test with DBUID 35061853010
-  if (nrow(roads) == 0) {
-    result <- sf::st_centroid(db)
-    result$DBUID <- db$DBUID
-    result$pop <- db_pop
-    result$offroad <- TRUE
-    return(dplyr::tibble())
-  }
-
-  ## set candidate PHHs by sampling road segments at the density set by the user
-  # cast to points
-  phh_onstreet <- sf::st_line_sample(roads, density = phh_density) |>
-    sf::st_cast("POINT")
-
-  #phh_onstreet <- sf::st_cast(sf::st_line_sample(roads, n=num_points), "POINT")
-  phh_buffer <- sf::st_buffer(phh_onstreet, dist = 5)
-  # get db centroid
-  db_centroid <- sf::st_centroid(db)
-
-  #ggplot() + geom_sf(data=db) +  geom_sf(data=roads) + geom_sf(data=phh_onstreet) + geom_sf(data=phh_buffer, fill=NA) + geom_sf(data=db_centroid)
-
-  # this gives us a line from each buffer to the centre point. but we want points!
-  phh_nearline <- sf::st_nearest_points(db_centroid, phh_buffer)
-  # so we extract just the second set of points
-  phh_nearpoint <- sf::st_cast(phh_nearline, "POINT")[c(FALSE, TRUE)] |> sf::st_as_sf()
-
-  phh_indb <- sf::st_filter(phh_nearpoint, db)
-
-  #ggplot() + geom_sf(data=db) + geom_sf(data=roads) + geom_sf(data=phh_indb)
-
-  result <- dplyr::as_tibble(phh_indb)
-
-  # se tthe DBUID
-  result$DBUID <- db$DBUID
-
-  result$pop <- db_pop/nrow(result)
-  #phh_nearpoint|> ggplot() + geom_sf(data=phh_buffer) +geom_sf(aes(colour="red"))
-
-  return(result)
-  #results[[i]] <- result
-}
-
-
-
-
-get_phhs_parallel <- function(db, db_pops, roads, min_phh_pop = 5, min_phhs_per_db = 1, road_buffer_m = 5 ){
+get_phhs_parallel <- function(db, db_pops, roads, min_phh_pop = 5, min_phhs_per_db = 1, min_phh_distance = 25, road_buffer_m = 5 ){
   #db_pops <- neighbourhoodstudy::ottawa_dbs_pop2021
   message(db$DBUID)
   #phh_householdsize <- 15
@@ -158,11 +95,40 @@ get_phhs_parallel <- function(db, db_pops, roads, min_phh_pop = 5, min_phhs_per_
     phh_indb_filtered <- phh_indb
   }
 
-  #ggplot() + geom_sf(data=db) + geom_sf(data=roads_touching_db) + geom_sf(data=phh_indb_filtered)
+  ## make sure PHHs aren't too close together
+  # create a buffer around them of radius 0.5 the min separation distance
+  phh_testbuffer <- sf::st_buffer(phh_indb_filtered, dist = min_phh_distance/2)
 
-  result <- dplyr::as_tibble(phh_indb_filtered)
+  # ggplot() + geom_sf(data=db) + geom_sf(data=phh_testbuffer)
 
-  # se tthe DBUID
+  phh_intersections <- sf::st_intersects(phh_testbuffer) |>
+    lapply(unlist)
+
+  num_intersections <- unlist(lapply(phh_intersections, length))
+  phhs_to_investigate <- which(num_intersections>1)
+
+  phh_keepers_index <- rep(TRUE, times=length(num_intersections))
+
+  #for (i in 1:length(num_intersections)){
+  if (length(phhs_to_investigate) > 1){
+    for (i in phhs_to_investigate){
+    #  message(i)
+      #if (num_intersections[[i]] == 1 || !phh_keepers[[i]])   next
+      if (!phh_keepers_index[[i]])   next
+       # message("more than one")
+        #message("keep the first good one we found")
+        phh_keepers_index[setdiff(phh_intersections[[i]], i)] <- FALSE
+
+        } # end for
+    } # end if
+
+  phh_keepers <- phh_indb_filtered[phh_keepers_index,]
+
+  #ggplot() + geom_sf(data=db) + geom_sf(data=roads_touching_db) + geom_sf(data=phh_keepers)
+
+  result <- dplyr::as_tibble(phh_keepers)
+
+  # set the DBUID
   result$DBUID <- db$DBUID
 
   result$pop <- db_pop/nrow(result)
@@ -292,3 +258,68 @@ phh_pull$id = 1:nrow(phh_pull)
 
   return (phh_indb)
 }
+
+
+
+#
+# testfunction <- function(db){
+#   message(db$DBUID)
+#   phh_householdsize <- 15
+#   phh_density  <- 0.005
+#
+#   #db <- test_dbs[i,]
+#   db_pop <- neighbourhoodstudy::ottawa_dbs_pop2021$dbpop2021[neighbourhoodstudy::ottawa_dbs_pop2021$DBUID == db$DBUID]
+#
+#   if (db_pop == 0 | length(db_pop) == 0) return(dplyr::tibble());
+#
+#   num_points <- round(db_pop/householdsize)
+#
+#   # get the roads that intersect the db plus a buffer?
+#   roads <- sf::st_filter(test_roads, sf::st_buffer(db, 5))
+#
+#
+#   # ggplot() + geom_sf(data=db) + geom_sf(data=roads)
+#
+#   # if it doesn't intersect any roads, we set a single PHH in the DB centroid
+#   # can test with DBUID 35061853010
+#   if (nrow(roads) == 0) {
+#     result <- sf::st_centroid(db)
+#     result$DBUID <- db$DBUID
+#     result$pop <- db_pop
+#     result$offroad <- TRUE
+#     return(dplyr::tibble())
+#   }
+#
+#   ## set candidate PHHs by sampling road segments at the density set by the user
+#   # cast to points
+#   phh_onstreet <- sf::st_line_sample(roads, density = phh_density) |>
+#     sf::st_cast("POINT")
+#
+#   #phh_onstreet <- sf::st_cast(sf::st_line_sample(roads, n=num_points), "POINT")
+#   phh_buffer <- sf::st_buffer(phh_onstreet, dist = 5)
+#   # get db centroid
+#   db_centroid <- sf::st_centroid(db)
+#
+#   #ggplot() + geom_sf(data=db) +  geom_sf(data=roads) + geom_sf(data=phh_onstreet) + geom_sf(data=phh_buffer, fill=NA) + geom_sf(data=db_centroid)
+#
+#   # this gives us a line from each buffer to the centre point. but we want points!
+#   phh_nearline <- sf::st_nearest_points(db_centroid, phh_buffer)
+#   # so we extract just the second set of points
+#   phh_nearpoint <- sf::st_cast(phh_nearline, "POINT")[c(FALSE, TRUE)] |> sf::st_as_sf()
+#
+#   phh_indb <- sf::st_filter(phh_nearpoint, db)
+#
+#   #ggplot() + geom_sf(data=db) + geom_sf(data=roads) + geom_sf(data=phh_indb)
+#
+#   result <- dplyr::as_tibble(phh_indb)
+#
+#   # se tthe DBUID
+#   result$DBUID <- db$DBUID
+#
+#   result$pop <- db_pop/nrow(result)
+#   #phh_nearpoint|> ggplot() + geom_sf(data=phh_buffer) +geom_sf(aes(colour="red"))
+#
+#   return(result)
+#   #results[[i]] <- result
+# }
+#

@@ -254,7 +254,7 @@ library(tidyverse)
 library(leaflet)
 targets::tar_load_everything()
 
-roads <- ottawa_road_filtered_shp; min_phh_pop = 5; road_buffer_m = 5
+roads <- ottawa_road_filtered_shp; min_phh_pop = 5; road_buffer_m = 5; min_phh_distance = 25
 
 dbs_missing <- dplyr::filter(ottawa_db_shp , ! DBUID %in% unique(phhs$DBUID)) |>
   dplyr::left_join(dplyr::mutate(db_pops, DBUID=as.character(DBUID)), dplyr::join_by("DBUID")) |>
@@ -282,3 +282,12 @@ leaflet() |> addTiles() |> addPolygons(data = big_dbs, label = ~ DBUID, popup = 
 ### how many phhs per db?
 
 phhs |> sf::st_set_geometry(NULL) |> dplyr::group_by(DBUID) |> summarise(n=n()) |> pull(n) |> hist(breaks = 111) #summarise(median=median(n), mean=mean(n))
+
+
+### checking dbs too close togehter
+
+db <- dbs_for_study["35061303003"][[1]]
+
+phhs |> dplyr::filter(DBUID == "35061303003") |> ggplot() + geom_sf()
+
+### FOR WEIRD DB GEOMETRIES, LOOK AT MUNSTER!!!
