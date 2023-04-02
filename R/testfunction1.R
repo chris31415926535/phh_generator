@@ -70,11 +70,12 @@ get_phhs_parallel <- function(db, db_pops, roads, min_phh_pop = 5, min_phhs_per_
 
   # get phh points slightly off the street based on the on-street points
   # this one is okay but doesn't work on weird-shaped dbs like 35060126020  with holes in them
-  phh_indb <-  get_phh_points_easy (db, phh_onstreet, delta_distance = 5)
+  #phh_indb <-  get_phh_points_easy (db, phh_onstreet, delta_distance = 5)
 
   # only if we find none, use the more complicated method
   #phh_indb <- get_phh_points_pushpull (db, phh_onstreet, delta_distance = 5) # this one is a bit slower but maybe works better? for now
-  if (nrow(phh_indb) == 0) phh_indb <- get_phh_points_pushpull (db, phh_onstreet, delta_distance = 5) # this one is a bit slower but maybe works better? for now
+  #if (nrow(phh_indb) == 0)
+  phh_indb <- get_phh_points_pushpull (db, phh_onstreet, delta_distance = 5) # this one is a bit slower but maybe works better? for now
 
 
   #ggplot() + geom_sf(data=db) + geom_sf(data=roads_touching_db) + geom_sf(data=phh_indb)
@@ -218,9 +219,13 @@ phh_push <- sf::st_as_sf(dplyr::select(phh_foranalysis, PHH_X_push, PHH_Y_push),
 phh_push$id = 1:nrow(phh_push)
 phh_pull <- sf::st_as_sf(dplyr::select(phh_foranalysis, PHH_X_pull, PHH_Y_pull), coords = c("PHH_X_pull","PHH_Y_pull"), crs=32189)
 phh_pull$id = 1:nrow(phh_pull)
+
+# consider both at once
+phh_pushpull <- dplyr::bind_rows(phh_push, phh_pull)
 # })
 
 # ggplot() + geom_sf(data=db) +  geom_sf(data=roads_touching_db) + geom_sf(data=phh_push, colour="red")+ geom_sf(data=phh_pull, colour="blue") +  geom_sf(data=db_centroid)
+# ggplot() + geom_sf(data=db) +  geom_sf(data=roads_touching_db) + geom_sf(data=phh_pushpull, colour="green") +  geom_sf(data=db_centroid)
   #phh_onstreet <- sf::st_cast(sf::st_line_sample(roads_touching_db, n=num_points), "POINT")
 
   # phh_buffer <- sf::st_buffer(phh_onstreet, dist = 5)
@@ -235,12 +240,12 @@ phh_pull$id = 1:nrow(phh_pull)
   # phh_nearpoint <- sf::st_cast(phh_nearline, "POINT")[c(FALSE, TRUE)] |>
   #   sf::st_as_sf()
 
-  phh_indb <- sf::st_filter(phh_pull, db)
+  phh_indb <- sf::st_filter(phh_pushpull, db)
 
   # if none of the "pull" phhs are in the db, then check the push ones
-  if (nrow(phh_indb) == 0) {
-    phh_indb <- sf::st_filter(phh_push, db)
-  }
+  # if (nrow(phh_indb) == 0) {
+  #   phh_indb <- sf::st_filter(phh_push, db)
+  # }
 
   # if none of the push ones are in it either (weird!!) just give the db centroid
   # we manually remove junk from th ecentroid, this won't generalize well FIXME TODO
@@ -256,6 +261,7 @@ phh_pull$id = 1:nrow(phh_pull)
   phh_indb$id <- NULL
   phh_indb <- dplyr::rename(phh_indb, x = geometry)
 
+  # ggplot() + geom_sf(data=db) +  geom_sf(data=roads_touching_db) + geom_sf(data=phh_indb)
   return (phh_indb)
 }
 
