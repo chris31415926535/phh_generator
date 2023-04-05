@@ -1,33 +1,49 @@
 
-get_phhs_polished <- function(region, region_idcol, region_pops, roads, min_phh_pop = 5, min_phhs_per_region = 1, min_phh_distance = 25, road_buffer_m = 5 ){
-  #region_pops <- neighbourhoodstudy::ottawa_regions_pop2021
-  region_idcol <- "DBUID"
-  #message(region[,region_idcol, drop=TRUE])
-  #phh_householdsize <- 15
-  phh_density  <- 0.005
+#' Get Pseudo-Households (PHH) for a region
+#'
+#' @param region simple feature object
+#' @param region_idcol character, name of column with unique region id
+#' @param region_popcol character, name of column with region population
+#' @param roads simple feature object, lines or polylines with road network
+#' @param roads_idcol character, name of column containing road unique identifiers
+#' @param phh_density numeric, parameter given to sf::st_line_sample()
+#' @param min_phh_pop numeric, minimum population per phh
+#' @param min_phhs_per_region numeric, minimum phhs per region (it will try its best)
+#' @param min_phh_distance numeric, minimum distance between phhs in metres
+#' @param road_buffer_m numeric, buffer in metres for intersections
+#'
+#' @return a simple feature object with one row per phh in the region
+#' @export
+get_phhs_polished <- function(region, region_idcol, region_popcol, roads, roads_idcol = NA, phh_density = 0.005, min_phh_pop = 5, min_phhs_per_region = 1, min_phh_distance = 25, road_buffer_m = 5 ){
 
+  # if no road idcol is given, we give each road a simple numeric identifier
+  if (is.na(roads_idcol)) {
+    roads_idcol <- "road_id"
+    region$road_id <- 1:nrow(region)
+  }
 
-  #region <- test_regions[i,]
-  #region_pop <- region_pops$dbpop2021[region_pops$DBUID == region$DBUID]
-  region_pop <- region_pops$dbpop2021[region_pops[, region_idcol, drop=TRUE] == region[, region_idcol, drop=TRUE]]
+  # attributes are assumed to be constant across all simple feature inputs
+  sf::st_agr(region) = "constant"
+  sf::st_agr(roads) = "constant"
 
+  roads <- dplyr::select(roads, dplyr::all_of(roads_idcol))
+
+  region_pop <- region[, region_popcol, drop=TRUE];
 
   # if no population, return empty result
   if (region_pop == 0) return(dplyr::tibble());
 
-  #num_points <- round(db_pop/householdsize)
-
-  # get the roads that intersect the db plus a buffer?
-  #roads_touching_db <- sf::st_filter(roads, sf::st_buffer(db, road_buffer_m))
+  # get the roads that intersect the region plus a buffer
   # we cast to multilinestring and then back to linestring to deal with disconnected multilinestrings
-  roads_touching_region <- sf::st_intersection(roads, sf::st_buffer(region, road_buffer_m)) |> sf::st_cast("MULTILINESTRING") |> sf::st_cast("LINESTRING")
+  roads_touching_region <- sf::st_intersection(roads, sf::st_buffer(region, road_buffer_m)) |>
+    sf::st_cast("MULTILINESTRING", warn = FALSE) |>
+    sf::st_cast("LINESTRING", warn = FALSE)
 
 
   # ggplot() + geom_sf(data=region) + geom_sf(data=roads_touching_region)
 
-  # if it doesn't intersect any roads
-  # FIXME TODO this can be an option!
-  # can test with DBUID 35061853010
+  # if it doesn't intersect any roads, return no results.
+  # FIXME TODO this could be a parameter--e.g. could return centroid instead
   if (nrow(roads_touching_region) == 0) {
     #result <- sf::st_centroid(region)
     #result$DBUID <- region$DBUID
@@ -43,15 +59,10 @@ get_phhs_polished <- function(region, region_idcol, region_pops, roads, min_phh_
   phh_onstreet <- sf::st_line_sample(roads_touching_region, density = phh_density) |>
     sf::st_cast("POINT")
 
-  # If line sampling returns no points, sample 1 per region-intersecting line segment
-  # sometimes road segments are too short for density, so then we sample 1 point
-  # from the intersection of the region and each road segment
+  # If line sampling returns no points (e.g. because each segment is too short for
+  # the sampling density), sample 1 point per region-intersecting line segment
   if (length(phh_onstreet) == 0) {
-    phh_onstreet <- sf::st_line_sample(
-      roads_touching_region
-      # sf::st_intersection(roads_touching_region, sf::st_buffer(region, road_buffer_m)),
-      ,n=1
-    ) |>
+    phh_onstreet <- sf::st_line_sample(roads_touching_region,n=1) |>
       sf::st_cast("POINT")
   }
 
@@ -70,17 +81,22 @@ get_phhs_polished <- function(region, region_idcol, region_pops, roads, min_phh_
       sf::st_cast("POINT")
   }
 
+  # add back road information for traceability
+  # this is convoluted because points don't intersect lines reliably
+  # need to buffer the road, get point intersections
+  # TODO explore buffering the points instead, may be faster
+  sf::st_agr(roads_touching_region) = "constant"
+  phh_onstreet <- sf::st_intersection(sf::st_buffer(roads_touching_region, 1), phh_onstreet)
+
   # ggplot() + geom_sf(data=region) + geom_sf(data=phh_onstreet)
 
   # get phh points slightly off the street based on the on-street points
-  # this one is okay but doesn't work on weird-shaped regions like 35060126020  with holes in them
-  #phh_inregion <-  get_phh_points_easy (region, phh_onstreet, delta_distance = 5)
-
-  # only if we find none, use the more complicated method
-  #phh_inregion <- get_phh_points_pushpull (region, phh_onstreet, delta_distance = 5) # this one is a bit slower but maybe works better? for now
-  #if (nrow(phh_inregion) == 0)
-  phh_inregion <- get_phh_points_pushpull (region, phh_onstreet, delta_distance = 5) # this one is a bit slower but maybe works better? for now
-
+  # for all points, we draw a line from it to the centroid, then create two
+  # candidate points: one closer and one farther along the line. Then we keep
+  # any (probably one) that are inside the region. This seems to work well with
+  # weird convexities and strange crescent geometries, giving a good number of
+  # points. If there are too many too close together we thin them out later.
+  phh_inregion <- get_phh_points_pushpull (region, phh_onstreet, roads_idcol, delta_distance = 5)
 
   #ggplot() + geom_sf(data=region) + geom_sf(data=roads_touching_region) + geom_sf(data=phh_inregion)
 
@@ -114,34 +130,32 @@ get_phhs_polished <- function(region, region_idcol, region_pops, roads, min_phh_
 
   phh_keepers_index <- rep(TRUE, times=length(num_intersections))
 
-  #for (i in 1:length(num_intersections)){
+  # if more than one candidate phh, look through all candidate phhs
   if (length(phhs_to_investigate) > 1){
     for (i in phhs_to_investigate){
-      #  message(i)
-      #if (num_intersections[[i]] == 1 || !phh_keepers[[i]])   next
+      # if this one has already been eliminated, skip it
       if (!phh_keepers_index[[i]])   next
-      # message("more than one")
-      #message("keep the first good one we found")
+      # keep this phh, eliminate any other phhs its the buffer zone
       phh_keepers_index[setdiff(phh_intersections[[i]], i)] <- FALSE
-
     } # end for
   } # end if
 
+  # use our index to keep the keepers
   phh_keepers <- phh_inregion_filtered[phh_keepers_index,]
 
   #ggplot() + geom_sf(data=region) + geom_sf(data=roads_touching_region) + geom_sf(data=phh_keepers)
 
-  result <- dplyr::as_tibble(phh_keepers)
+  result <- sf::st_as_sf(dplyr::as_tibble(phh_keepers))
 
-  # set the DBUID
-  #result$DBUID <- region$DBUID
-  result[, region_idcol] <- region[, region_idcol, drop = TRUE]
+  # set the region idcolumn. note all phhs will belong to the same one region!
+  result[, region_idcol] <- as.character(region[, region_idcol, drop = TRUE])
 
-  result$pop <- region_pop/nrow(result)
-  #phh_nearpoint|> ggplot() + geom_sf(data=phh_buffer) +geom_sf(aes(colour="red"))
+  # set the population by distributing it evenly across all phhs
+  result$pop <- as.numeric(region_pop/nrow(result))
+  result$geometry <- result$x
+  result$x <- NULL
 
   return(result)
-  #results[[i]] <- result
 }
 
 
@@ -313,7 +327,7 @@ get_phh_points_easy <- function (db, phh_onstreet, delta_distance = 5){
 # testing--if we use NAD with metres is there a way to use simple geometry to try
 # to get points X metres towards and away from the centroid? then if hte point stowards
 # aren't in the db because of weird geometries we can try the pushes away
-get_phh_points_pushpull <- function(db, phh_onstreet, delta_distance = 5){
+get_phh_points_pushpull <- function(db, phh_onstreet, roads_idcol, delta_distance = 5){
   #
   # phh_onstreet <- sf::st_line_sample(roads_touching_db, density = phh_density) |>
   #   sf::st_cast("POINT")
@@ -326,27 +340,12 @@ get_phh_points_pushpull <- function(db, phh_onstreet, delta_distance = 5){
 
   phh_onstreet_coords <- dplyr::as_tibble(sf::st_coordinates(phh_onstreet))
   colnames(phh_onstreet_coords) <- c("PHH_X", "PHH_Y")
+  phh_onstreet_coords[, roads_idcol] <- phh_onstreet[, roads_idcol, drop=TRUE]
 
   phh_foranalysis <-   dplyr::bind_cols(phh_onstreet_coords, db_centroid_coords)
 
-# DPLYR
-# bench::mark(code = {
-#     phh_foranalysis |>
-#     dplyr::mutate(deltaY = DB_Y-PHH_Y,
-#                   deltaX = DB_X-PHH_X,
-#                   magnitude = sqrt((deltaY)^2 + (deltaX)^2),
-#                  unit_vecY = deltaY/magnitude,
-#                 unit_vecX = deltaX/magnitude
-#   ,
-#   PHH_X_pull = PHH_X + unit_vecX * delta_distance,
-#   PHH_Y_pull = PHH_Y + unit_vecY * delta_distance,
-#   PHH_X_push = PHH_X - unit_vecX * delta_distance,
-#   PHH_Y_push = PHH_Y - unit_vecY * delta_distance,
-#                   )
-#
-# })
 
-## BASE R is 100x faster than dplyr :(
+## BASE R is 100x faster than dplyr
 
 # bench::mark(code={
 phh_foranalysis$deltaY = phh_foranalysis$DB_Y - phh_foranalysis$PHH_Y
@@ -361,48 +360,22 @@ phh_foranalysis$PHH_Y_push = phh_foranalysis$PHH_Y - phh_foranalysis$unit_vecY *
 # })
 
 # bench::mark(code = {
-phh_push <- sf::st_as_sf(dplyr::select(phh_foranalysis, PHH_X_push, PHH_Y_push), coords = c("PHH_X_push","PHH_Y_push"), crs=32189)
+original_crs <- sf::st_crs(phh_onstreet)
+phh_push <- sf::st_as_sf(dplyr::select(phh_foranalysis,  PHH_X_push, PHH_Y_push), coords = c("PHH_X_push","PHH_Y_push"), crs=original_crs)
 phh_push$id = 1:nrow(phh_push)
-phh_pull <- sf::st_as_sf(dplyr::select(phh_foranalysis, PHH_X_pull, PHH_Y_pull), coords = c("PHH_X_pull","PHH_Y_pull"), crs=32189)
+phh_pull <- sf::st_as_sf(dplyr::select(phh_foranalysis,  PHH_X_pull, PHH_Y_pull), coords = c("PHH_X_pull","PHH_Y_pull"), crs=original_crs)
 phh_pull$id = 1:nrow(phh_pull)
 
 # consider both at once
 phh_pushpull <- dplyr::bind_rows(phh_push, phh_pull)
+phh_pushpull[, roads_idcol] <- rep(x = phh_onstreet[, roads_idcol, drop=TRUE], times=2)
+
 # })
 
-# ggplot() + geom_sf(data=db) +  geom_sf(data=roads_touching_db) + geom_sf(data=phh_push, colour="red")+ geom_sf(data=phh_pull, colour="blue") +  geom_sf(data=db_centroid)
-# ggplot() + geom_sf(data=db) +  geom_sf(data=roads_touching_db) + geom_sf(data=phh_pushpull, colour="green") +  geom_sf(data=db_centroid)
-  #phh_onstreet <- sf::st_cast(sf::st_line_sample(roads_touching_db, n=num_points), "POINT")
-
-  # phh_buffer <- sf::st_buffer(phh_onstreet, dist = 5)
-
-
-  #ggplot() + geom_sf(data=db) +  geom_sf(data=roads_touching_db) + geom_sf(data=phh_onstreet) + geom_sf(data=phh_buffer, fill=NA) + geom_sf(data=db_centroid)
-
-  # this gives us a line from each buffer to the centre point. but we want points!
-  # phh_nearline <- sf::st_nearest_points(db_centroid, phh_buffer)
-  #
-  # # so we extract just the second set of points
-  # phh_nearpoint <- sf::st_cast(phh_nearline, "POINT")[c(FALSE, TRUE)] |>
-  #   sf::st_as_sf()
+# ggplot() + geom_sf(data=db) +  geom_sf(data=roads_touching_region) + geom_sf(data=phh_push, colour="red")+ geom_sf(data=phh_pull, colour="blue") +  geom_sf(data=db_centroid)
 
   phh_indb <- sf::st_filter(phh_pushpull, db)
 
-  # if none of the "pull" phhs are in the db, then check the push ones
-  # if (nrow(phh_indb) == 0) {
-  #   phh_indb <- sf::st_filter(phh_push, db)
-  # }
-
-  # if none of the push ones are in it either (weird!!) just give the db centroid
-  # we manually remove junk from th ecentroid, this won't generalize well FIXME TODO
-  # if (nrow(phh_indb) == 0) {
-  #   phh_indb <- db_centroid
-  #   phh_indb$DGUID <- NULL
-  #   phh_indb$DBRPLAMX <- NULL
-  #   phh_indb$DBRPLAMY <- NULL
-  #   phh_indb$LANDAREA <- NULL
-  #   phh_indb$PRUID <- NULL
-  # }
 
   phh_indb$id <- NULL
   phh_indb <- dplyr::rename(phh_indb, x = geometry)
