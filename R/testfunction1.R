@@ -11,27 +11,75 @@
 #' @param min_phhs_per_region numeric, minimum phhs per region (it will try its best)
 #' @param min_phh_distance numeric, minimum distance between phhs in metres
 #' @param road_buffer_m numeric, buffer in metres for intersections
+#' @param delta_distance_m numeric, buffer in metres for intersections
+#' @param skip_unpopulated_regions boolean, should we skip regions with no population?
 #'
 #' @return a simple feature object with one row per phh in the region
 #' @export
-get_phhs_polished <- function(region, region_idcol, region_popcol, roads, roads_idcol = NA, phh_density = 0.005, min_phh_pop = 5, min_phhs_per_region = 1, min_phh_distance = 25, road_buffer_m = 5 ){
+get_phhs_polished <- function(region, region_idcol, roads, region_popcol = NA, roads_idcol = NA, phh_density = 0.005, min_phh_pop = 5, min_phhs_per_region = 1, min_phh_distance = 25, road_buffer_m = 5, delta_distance_m = 5, skip_unpopulated_regions = TRUE ){
 
-  # if no road idcol is given, we give each road a simple numeric identifier
-  if (is.na(roads_idcol)) {
-    roads_idcol <- "road_id"
-    region$road_id <- 1:nrow(region)
+  ## INPUT VALIDATION
+
+  # check region and roads are both sf objects
+  if ((!"sf" %in% class(region)) | (!"sf" %in% class(roads))) stop("Region and roads must both be simple feature (sf) objects.")
+
+  # check region_idcol is a valid column name
+  if ((!region_idcol %in% colnames(region))) stop("Parameter region_idcol must name a valid column in region.")
+
+  # check region_popcol parameter
+  if (is.na(region_popcol)) {
+    use_pops <- FALSE
+    warning ("No region population column provided. PHHs will not be assigned populations.")
+  } else {
+    use_pops <- TRUE
+    if (!region_popcol %in% colnames(region))  stop("Parameter region_popcol must name a valid column in region.")
   }
 
+  # check road idcol
+  if (is.na(roads_idcol)) {
+    warning ("No roads id column provided. PHHs will not be traceable back to road segments.")
+  } else {
+    if (!roads_idcol %in% colnames(roads)) stop("Parameter roads_idcol must name a valid column in region.")
+  }
+
+  # check same CRS between region and roads
+  region_crs <- sf::st_crs(region)
+  roads_crs <- sf::st_crs(roads)
+  if (region_crs != roads_crs) stop("Region and roads must have same CRS (coordinate reference system).")
+
+
+  # if no road idcol is given, we give each road a simple numeric identifier
+  # and a silly column ID name so we can remove it later
+  if (is.na(roads_idcol)) {
+    roads_idcol <- "road_id_NA"
+    region$road_id_NA <- 1:nrow(region)
+  }
+
+  # check region has only one row
+  if (nrow(region) != 1) stop ("One and only one region must be provided at a time in a one-row sf tibble. Use lapply or purrr::map for many regions.")
+
+  # check roads have at least one row
+  if (nrow(roads) == 0) stop ("No road data detected in roads input. Must have at least one row.")
+
+  # WGS84 won't work
+  if (grepl(region_crs$input, "WGS84")) stop("Input CRS is WGS84, which is not supported. Did you mean to use a projected CRS instead?")
+
+
+  ## PRELIMINARY INPUT PROCESSING
   # attributes are assumed to be constant across all simple feature inputs
   sf::st_agr(region) = "constant"
   sf::st_agr(roads) = "constant"
 
-  roads <- dplyr::select(roads, dplyr::all_of(roads_idcol))
+  # remove unnecessary road columns
+  roads <- dplyr::select(roads, dplyr::any_of(roads_idcol))
 
-  region_pop <- region[, region_popcol, drop=TRUE];
+  # if we are using populations, set that up here, and also
+  if (use_pops){
+    region_pop <- region[, region_popcol, drop=TRUE];
 
-  # if no population, return empty result
-  if (region_pop == 0) return(dplyr::tibble());
+    # if no population and we're skipping such regions, return empty result
+    if (region_pop == 0 & skip_unpopulated_regions) return(dplyr::tibble());
+  }
 
   # get the roads that intersect the region plus a buffer
   # we cast to multilinestring and then back to linestring to deal with disconnected multilinestrings
@@ -96,22 +144,26 @@ get_phhs_polished <- function(region, region_idcol, region_popcol, roads, roads_
   # any (probably one) that are inside the region. This seems to work well with
   # weird convexities and strange crescent geometries, giving a good number of
   # points. If there are too many too close together we thin them out later.
-  phh_inregion <- get_phh_points_pushpull (region, phh_onstreet, roads_idcol, delta_distance = 5)
+  phh_inregion <- get_phh_points_pushpull (region, phh_onstreet, roads_idcol, delta_distance = delta_distance_m)
 
   #ggplot() + geom_sf(data=region) + geom_sf(data=roads_touching_region) + geom_sf(data=phh_inregion)
 
-  ## make sure we get the right number of points here
+  ## if we're using populations, make sure we get the right number of points here
   # TODOD FIXME create a tested function instead of this
-  if (region_pop/nrow(phh_inregion) < min_phh_pop) {
-    num_needed <- ceiling(region_pop/min_phh_pop)
+  if (use_pops){
+    if (region_pop/nrow(phh_inregion) < min_phh_pop) {
+      num_needed <- ceiling(region_pop/min_phh_pop)
 
-    num_orig <- nrow(phh_inregion)
-    num_per_rep <- ceiling(num_orig/num_needed)
-    num_reps <- ceiling(num_orig/num_per_rep)
-    # looks complex but this is to whittle our list down
-    # say we have 6 but need 4.
-    filter_index <- rep(c(TRUE, rep(FALSE, times= num_per_rep)), times=(num_reps+1))[1:num_orig]
-    phh_inregion_filtered <- phh_inregion[filter_index,]
+      num_orig <- nrow(phh_inregion)
+      num_per_rep <- ceiling(num_orig/num_needed)
+      num_reps <- ceiling(num_orig/num_per_rep)
+      # looks complex but this is to whittle our list down
+      # say we have 6 but need 4.
+      filter_index <- rep(c(TRUE, rep(FALSE, times= num_per_rep)), times=(num_reps+1))[1:num_orig]
+      phh_inregion_filtered <- phh_inregion[filter_index,]
+    } else {
+      phh_inregion_filtered <- phh_inregion
+    }
   } else {
     phh_inregion_filtered <- phh_inregion
   }
@@ -148,12 +200,24 @@ get_phhs_polished <- function(region, region_idcol, region_popcol, roads, roads_
   result <- sf::st_as_sf(dplyr::as_tibble(phh_keepers))
 
   # set the region idcolumn. note all phhs will belong to the same one region!
-  result[, region_idcol] <- as.character(region[, region_idcol, drop = TRUE])
+  region_id <- as.character(region[, region_idcol, drop = TRUE])
+  result[, region_idcol] <- region_id
+
+  # set unique phh id: region id, then period, then sequential numbers
+  result$phh_id <- paste0(region_id, ".", 1:nrow(result))
 
   # set the population by distributing it evenly across all phhs
-  result$pop <- as.numeric(region_pop/nrow(result))
+  if (use_pops){
+    #result$pop <- as.numeric(region_pop/nrow(result))
+    result[, region_popcol] <- as.numeric(region_pop/nrow(result))
+  }
   result$geometry <- result$x
   result$x <- NULL
+
+  if (roads_idcol == "road_id_NA") result$road_id_NA <- NULL
+
+  # make it a real sf object
+  result <- sf::st_as_sf(result, crs = region_crs)
 
   return(result)
 }
@@ -380,7 +444,7 @@ phh_pushpull[, roads_idcol] <- rep(x = phh_onstreet[, roads_idcol, drop=TRUE], t
   phh_indb$id <- NULL
   phh_indb <- dplyr::rename(phh_indb, x = geometry)
 
-  # ggplot() + geom_sf(data=db) +  geom_sf(data=roads_touching_db) + geom_sf(data=phh_indb)
+  # ggplot() + geom_sf(data=db) +  geom_sf(data=roads_touching_region) + geom_sf(data=phh_indb)
   return (phh_indb)
 }
 
