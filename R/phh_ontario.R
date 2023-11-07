@@ -1,12 +1,16 @@
 library(sf)
 library(dplyr)
-#library(leaflet)
+library(pseudohouseholds)
 library(future)
 
-remotes::install_local("~/datascience/R/packages/pseudohouseholds", force = TRUE)
 
-# generate PHHs for all census divisions in Ontario, Canada
-# use StatsCan 2021 road network
+# Generate PHHs for all census divisions in Ontario, Canada
+# Using StatsCan 2021 road network
+
+# NOTE! THIS SHOULD NOT BE RUN INTERACTIVELY USING RSTUDIO. IT IS TOO SLOW.
+# INSTEAD RUN WITH
+# > Rscript phh_ontario.R
+
 # Roads: all roads of class 20, 21, 22, 23 (road, arterial, collector, local)
 # AND roads of rank 4 or 5 in class 12, 13? "RANK" IN ('4','5') AND "CLASS" IN ('12', '13')
 # AND the trans-canada highway (RANK 1) where the name IS NOT a 400-series highway
@@ -17,10 +21,12 @@ remotes::install_local("~/datascience/R/packages/pseudohouseholds", force = TRUE
 province_name <- "Ontario"
 province_pruid <- "35"
 
-future::plan(future::multisession)
+
+# set up multi-threading
+future::plan(future::multisession, workers = 20)
 future::nbrOfFreeWorkers()
 
-#source("~/datascience/R/geospatial/phh_generator/R/testfunction1.R")
+
 message("Loading CD data")
 all_cds <- sf::read_sf("~/datascience/data/spatial/lcd_000b21a_e/lcd_000b21a_e.shp") |>
   sf::st_set_geometry(NULL )|>
@@ -36,22 +42,11 @@ all_dbpops <- readr::read_csv("~/datascience/data/spatial/geographic_attribute_f
 
 
 
-# all_dbs <-  sf::read_sf( "~/datascience/data/spatial/ldb_000b21a_e/ldb_000b21a_e.shp") |>
-#   dplyr::filter(PRUID == province_pruid) |>
-#   dplyr::select(DBUID) |>
-#   dplyr::left_join(all_dbpops)
-
 all_dbs <-  sf::read_sf( "~/datascience/data/spatial/ldb_000b21a_e/ldb_000b21a_e.shp",
                          query = 'SELECT DBUID FROM "ldb_000b21a_e" WHERE "PRUID" = \'35\'') |>
-  #dplyr::filter(PRUID == province_pruid) |>
-  #dplyr::select(DBUID) |>
-  dplyr::left_join(all_dbpops)
+  dplyr::left_join(all_dbpops, by = "DBUID")
 
 
-#all_roads <- sf::read_sf("~/datascience/data/spatial/lrnf000r21a_e/lrnf000r21a_e.shp")
-# ontario_roads <- sf::read_sf("~/datascience/data/spatial/lrnf000r21a_e/lrnf000r21a_e.shp") |> dplyr::filter(PRNAME_L == "Ontario" | PRNAME_R == "Ontario") |> sf::write_sf("~/datascience/data/spatial/lrnf000r21a_e/roads_ontario.shp")
-# ontario_roads <- sf::read_sf("~/datascience/data/spatial/lrnf000r21a_e/roads_ontario.shp") |>
-#   dplyr::filter(CLASS %in% c(20:23))
 message("Loading road data")
 ontario_roads <- sf::read_sf("~/datascience/data/spatial/lrnf000r21a_e/lrnf000r21a_e.shp",
                              query = 'SELECT NGD_UID,NAME,RANK,CLASS FROM "lrnf000r21a_e" WHERE
@@ -66,8 +61,14 @@ ontario_roads <- sf::read_sf("~/datascience/data/spatial/lrnf000r21a_e/lrnf000r2
 
 i <- 1
 
+# set the date stamp once up front, in case running the analysis spans midnight
+datestamp <- Sys.Date()
+if (!dir.exists(paste0("output/",datestamp))) dir.create(paste0("output/",datestamp))
+
 max_index <- nrow(all_cds)
 #max_index <- 5
+
+# Loop through all census divisions and create PHHs
 for (i in 1:max_index){
   message(i,"/",max_index)
 
@@ -75,9 +76,6 @@ for (i in 1:max_index){
 
   cd_regex <- paste0("^", this_cd$CDUID)
 
-  # local_dbs <- sf::read_sf( "~/datascience/data/spatial/ldb_000b21a_e/ldb_000b21a_e.shp") |>
-  #   dplyr::select(DBUID) |>
-  #   dplyr::left_join(all_dbpops) |>
   local_dbs <- dplyr::filter(all_dbs, stringr::str_detect(DBUID, cd_regex))
 
   local_dbs$dbpop <- dplyr::if_else(is.na(local_dbs$dbpop), 0, local_dbs$dbpop)
@@ -85,7 +83,7 @@ for (i in 1:max_index){
   local_dbs_buffer <- sf::st_union(local_dbs) |>
     sf::st_buffer(1)
 
-  local_roads <- sf::st_filter(ontario_roads, local_dbs_buffer) #|> #sf::read_sf("~/datascience/data/spatial/lrnf000r21a_e/lrnf000r21a_e.shp") |>
+  local_roads <- sf::st_filter(ontario_roads, local_dbs_buffer)
 
 
    # ggplot() + geom_sf(data=local_dbs)
@@ -104,39 +102,11 @@ for (i in 1:max_index){
     delta_distance_m = 5,
     skip_unpopulated_regions = FALSE
   )
-#
-#
-#   regions_for_study <- split(local_dbs, ~ DBUID)
-#
-#
-#   progressr::with_progress({
-#     ##https://furrr.futureverse.org/articles/progress.html
-#
-#     p <- progressr::progressor(length(regions_for_study))
-#
-#     phh_candidates <- furrr::future_map(regions_for_study, ~{
-#       p()
-#       # get_phhs_parallel(db = .x, db_pops = db_pops,
-#       #                   roads = ottawa_road_filtered_shp, min_phh_pop = 5, min_phhs_per_db=4, road_buffer_m = 5)
-#       get_phhs_polished(region = .x, region_idcol = "DBUID", region_popcol = "dbpop",
-#                         roads = local_roads, roads_idcol = "NGD_UID",
-#                         min_phh_pop = 5, phh_density = 0.005, min_phhs_per_region=4, road_buffer_m = 5)
-#     } , .options=furrr::furrr_options(seed=NULL)
-#     ,.progress = TRUE
-#     )
-#   })
-#
-#
-#
-#   phh_valid <- phh_candidates[purrr::map_int(phh_candidates, length) > 0]
-#
-#   phhs <- dplyr::tibble(x=phh_valid) |>
-#     tidyr::unnest(cols = c(x)) |>
-#     sf::st_as_sf()
+
 
   filename <- paste0(this_cd$CDUID, "-phhs-",Sys.Date(),".shp")
 
-  sf::write_sf(phhs, paste0("output/bigtest/",filename))
+  sf::write_sf(phhs, paste0("output/",datestamp, "/",filename))
 
 }
 
